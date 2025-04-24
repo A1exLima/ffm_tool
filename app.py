@@ -182,55 +182,84 @@ elif funcao == "Alimentação":
     st.title("Automação FFM - Evidências Alimentação")
     download_button('Planilha Modelo', TEMPLATE_ALIMENTACAO, 'planilha_modelo_alimentacao.xlsx')
     uploaded_file = st.file_uploader("📂 Envie a planilha de Alimentação (.xlsx)", type=["xlsx"], key="alim_upload")
+    
     if uploaded_file:
         info_links = extrair_links_por_alimentacao(uploaded_file)
+        
         if not info_links:
             st.error("❌ Nenhum link encontrado na planilha.")
+        
         else:
             st.success(f"✅ {len(info_links)} reembolsos encontrados.")
-            if st.button("📝 Gerar Documento Word - Alimentação", key="btn_alim"): 
+            
+            if st.button("📝 Gerar Documento Word - Alimentação", key="btn_alim"):
                 doc = Document()
                 log_area = st.empty()
+                
                 for i, (id_reembolso, grupos) in enumerate(info_links, 1):
                     log_area.markdown(f"🔄 Processando reembolso {id_reembolso} ({i}/{len(info_links)})")
+                    
                     for categoria, links in grupos.items():
                         if not links:
                             continue
+                        
                         doc.add_page_break()
                         p = doc.add_paragraph()
                         ajustar_altura_doc_paragrafo(p)
                         p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
                         run = p.add_run(f"Reembolso: {id_reembolso} — {categoria}")
                         aplicar_fonte_arial(run)
+                        
                         for link in links:
                             try:
-                                if not link.startswith("http"):
-                                    link = "https://" + link
-                                resp = requests.get(link, timeout=40)
-                                resp.raise_for_status()
-                                ct = resp.headers.get('Content-Type', '')
-                                if 'pdf' in ct:
-                                    imgs = pdf_para_imagens(resp.content)
+                                attempt = 0
+                                max_attempts = 3  # Número de tentativas
+                                
+                                while attempt < max_attempts:
+                                    attempt += 1
+                                    log_area.write(f"Tentativa {attempt} de carregar imagem: {link}")
+                                    
+                                    if not link.startswith("http"):
+                                        link = "https://" + link
+                                    
+                                    resp = requests.get(link, timeout=40)
+                                    resp.raise_for_status()
+                                    
+                                    ct = resp.headers.get('Content-Type', '')
+                                    
+                                    if 'pdf' in ct:
+                                        imgs = pdf_para_imagens(resp.content)
+                                    
+                                    else:
+                                        img = Image.open(BytesIO(resp.content)).convert("RGB")
+                                        extrema = img.getextrema()
+                                        
+                                        if all(e[0] == e[1] for e in extrema):
+                                            raise ValueError("Imagem em branco.")
+                                        
+                                        imgs = [img]
+                                    
+                                    for img in imgs:
+                                        p_img = doc.add_paragraph()
+                                        p_img.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                                        inserir_imagem_redimensionada(p_img, img)
+                                        break  # Exit loop after successfully loading image
+                                
                                 else:
-                                    img = Image.open(BytesIO(resp.content)).convert("RGB")
-                                    extrema = img.getextrema()
-                                    if all(e[0]==e[1] for e in extrema):
-                                        raise ValueError("Imagem em branco.")
-                                    imgs = [img]
-                                for img in imgs:
-                                    p_img = doc.add_paragraph()
-                                    p_img.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                                    inserir_imagem_redimensionada(p_img, img)
+                                    st.warning(f"Todas as tentativas falharam para carregar: {link}")
+                            
                             except Exception as e_img:
                                 p_err = doc.add_paragraph()
                                 p_err.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
                                 r_err = p_err.add_run(f"⚠️ Erro ao carregar imagem: {e_img}")
                                 aplicar_fonte_arial(r_err)
+                
                 buffer = BytesIO()
                 doc.save(buffer)
                 buffer.seek(0)
                 log_area.empty()
                 st.success("✅ Documento Word gerado!")
+                
                 st.download_button(
                     label="📥 Baixar Word - Alimentação", 
                     data=buffer, 
