@@ -206,7 +206,7 @@ elif funcao == "Alimentação":
                             try:
                                 if not link.startswith("http"):
                                     link = "https://" + link
-                                resp = requests.get(link, timeout=20)
+                                resp = requests.get(link, timeout=40)
                                 resp.raise_for_status()
                                 ct = resp.headers.get('Content-Type', '')
                                 if 'pdf' in ct:
