@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import requests
 from PIL import Image
@@ -10,12 +11,17 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import fitz  # PyMuPDF
 
+# Definições de caminho
+BASE_DIR = os.path.dirname(__file__)
+TEMPLATE_RELACIONAMENTO = os.path.join(BASE_DIR, "planilha_modelo_relacionamento.xlsx")
+TEMPLATE_ALIMENTACAO = os.path.join(BASE_DIR, "planilha_modelo_alimentacao.xlsx")
+
 # Configuração da página
 st.set_page_config(page_title="SPOT - Automação FFM", layout="wide")
 
 # Função para inserir o logo PNG
 def inserir_logo():
-    logo_path = "./logo_spot.png"
+    logo_path = os.path.join(BASE_DIR, "logo_spot.png")
     logo_img = Image.open(logo_path)
     st.image(logo_img, width=250)
 
@@ -49,7 +55,7 @@ def aplicar_fonte_arial(run):
     run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
     run.font.size = Pt(12)
 
-# Função para extrair links para Ação de Relacionamento
+# Extrair links para Ação de Relacionamento
 def extrair_links_por_relatorio(file):
     wb = load_workbook(file, data_only=True)
     ws = wb.active
@@ -75,7 +81,7 @@ def extrair_links_por_relatorio(file):
         dados.append((numero_relatorio, imagens_por_tipo))
     return dados
 
-# Função para extrair links para Alimentação (células contêm URLs diretamente como texto)
+# Extrair links para Alimentação (URLs como texto)
 def extrair_links_por_alimentacao(file):
     wb = load_workbook(file, data_only=True)
     ws = wb.active
@@ -99,7 +105,7 @@ def extrair_links_por_alimentacao(file):
         dados.append((id_reembolso, grupos))
     return dados
 
-# Função para converter PDF em imagens
+# Converter PDF em imagens
 def pdf_para_imagens(pdf_bytes):
     imagens = []
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
@@ -109,14 +115,13 @@ def pdf_para_imagens(pdf_bytes):
             imagens.append(img)
     return imagens
 
-# Inserir logo e iniciar sidebar
+# Interface
 inserir_logo()
 funcao = st.sidebar.radio("Opções", ["Ação de Relacionamento", "Alimentação"])
 
-# Fluxo para Ação de Relacionamento
 if funcao == "Ação de Relacionamento":
     st.title("Automação FFM - Evidências Ação de Relacionamento")
-    download_button('Planilha Modelo', './planilha_modelo_relacionamento.xlsx', 'planilha_modelo_relacionamento.xlsx')
+    download_button('Planilha Modelo', TEMPLATE_RELACIONAMENTO, 'planilha_modelo_relacionamento.xlsx')
     uploaded_file = st.file_uploader("📂 Envie a planilha de Relacionamento (.xlsx)", type=["xlsx"], key="rel_upload")
     if uploaded_file:
         info_links = extrair_links_por_relatorio(uploaded_file)
@@ -127,7 +132,6 @@ if funcao == "Ação de Relacionamento":
             if st.button("📝 Gerar Documento Word", key="btn_rel"): 
                 doc = Document()
                 log_area = st.empty()
-                erros = []
                 for i, (num_relatorio, grupos) in enumerate(info_links, 1):
                     log_area.markdown(f"🔄 Processando relatório {num_relatorio} ({i}/{len(info_links)})")
                     for categoria, links in grupos.items():
@@ -174,11 +178,9 @@ if funcao == "Ação de Relacionamento":
                     file_name="evidencias_acao_relacionamento.docx", 
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
-
-# Fluxo para Alimentação
 elif funcao == "Alimentação":
     st.title("Automação FFM - Evidências Alimentação")
-    download_button('Planilha Modelo', './planilha_modelo_alimentacao.xlsx', 'planilha_modelo_alimentacao.xlsx')
+    download_button('Planilha Modelo', TEMPLATE_ALIMENTACAO, 'planilha_modelo_alimentacao.xlsx')
     uploaded_file = st.file_uploader("📂 Envie a planilha de Alimentação (.xlsx)", type=["xlsx"], key="alim_upload")
     if uploaded_file:
         info_links = extrair_links_por_alimentacao(uploaded_file)
