@@ -1,6 +1,8 @@
 import os
 import streamlit as st
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from PIL import Image
 from io import BytesIO
 from openpyxl import load_workbook
@@ -11,258 +13,275 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import fitz  # PyMuPDF
 
-# Definições de caminho
+# === Sessão HTTP com cabeçalhos de navegador e retries ===
+session = requests.Session()
+session.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/114.0.0.0 Safari/537.36"
+    )
+})
+retries = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"],
+)
+session.mount("https://", HTTPAdapter(max_retries=retries))
+
+# === Caminhos e configuração de página ===
 BASE_DIR = os.path.dirname(__file__)
 TEMPLATE_RELACIONAMENTO = os.path.join(BASE_DIR, "planilha_modelo_relacionamento.xlsx")
-TEMPLATE_ALIMENTACAO = os.path.join(BASE_DIR, "planilha_modelo_alimentacao.xlsx")
+TEMPLATE_AJUDA_CUSTO   = os.path.join(BASE_DIR, "planilha_modelo_ajuda_de_custo.xlsx")
 
-# Configuração da página
 st.set_page_config(page_title="SPOT - Automação FFM", layout="wide")
 
-# Função para inserir o logo PNG
+# === Funções auxiliares ===
 def inserir_logo():
-    logo_path = os.path.join(BASE_DIR, "logo_spot.png")
-    logo_img = Image.open(logo_path)
-    st.image(logo_img, width=250)
+    st.image(os.path.join(BASE_DIR, "logo_spot.png"), width=250)
 
-# Função para criar o botão de download
-def download_button(text, file_path, file_name, mime_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'):
-    with open(file_path, 'rb') as f:
-        file_bytes = f.read()
-    st.download_button(label=text, data=file_bytes, file_name=file_name, mime=mime_type)
+def download_button(label, path, filename):
+    with open(path, "rb") as f:
+        data = f.read()
+    st.download_button(
+        label=label,
+        data=data,
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-# Função para ajustar altura do parágrafo no Word
-def ajustar_altura_doc_paragrafo(paragraph):
-    p = paragraph._element
-    pPr = p.get_or_add_pPr()
+def ajustar_altura_doc_paragrafo(par):
+    pPr = par._element.get_or_add_pPr()
     pPr.append(OxmlElement('w:keepLines'))
     pPr.append(OxmlElement('w:keepNext'))
 
-# Função para inserir imagem redimensionada no Word
-def inserir_imagem_redimensionada(paragraph, img, largura_max=5.5, altura_max=7):
-    img_io = BytesIO()
-    img.save(img_io, format='PNG')
-    img_io.seek(0)
-    largura, altura = img.size
-    escala = min((largura_max * 96) / largura, (altura_max * 96) / altura) * 1.1
-    nova_largura = largura * escala / 96
-    run = paragraph.add_run()
-    run.add_picture(img_io, width=Inches(nova_largura))
+def inserir_imagem_redimensionada(par, img, largura_max=5.5, altura_max=7):
+    bio = BytesIO()
+    img.save(bio, format="PNG")
+    bio.seek(0)
+    w, h = img.size
+    scale = min((largura_max*96)/w, (altura_max*96)/h)*1.1
+    run = par.add_run()
+    run.add_picture(bio, width=Inches(w*scale/96))
 
-# Função para aplicar fonte Arial em um run
 def aplicar_fonte_arial(run):
     run.font.name = "Arial"
     run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
     run.font.size = Pt(12)
 
-# Extrair links para Ação de Relacionamento
 def extrair_links_por_relatorio(file):
     wb = load_workbook(file, data_only=True)
     ws = wb.active
-    colunas_por_categoria = {
-        "FOTO DA AÇÃO E CONQUISTA": list(range(1, 5)),
-        "FOTO DA LISTA DE PRESENÇA": list(range(5, 9)),
-        "UMA FOTO DA NOTA FISCAL": list(range(9, 13)),
+    categorias = {
+        "FOTO DA AÇÃO E CONQUISTA": list(range(1,5)),
+        "FOTO DA LISTA DE PRESENÇA": list(range(5,9)),
+        "UMA FOTO DA NOTA FISCAL":   list(range(9,13)),
     }
-    dados = []
+    resultados = []
     for row in ws.iter_rows(min_row=2):
-        numero_relatorio = row[0].value
-        if not numero_relatorio:
-            continue
-        imagens_por_tipo = {}
-        for categoria, indices in colunas_por_categoria.items():
-            imagens = []
-            for idx in indices:
-                cell = row[idx]
-                url = cell.hyperlink.target if cell.hyperlink else None
-                if url:
-                    imagens.append(url)
-            imagens_por_tipo[categoria] = imagens
-        dados.append((numero_relatorio, imagens_por_tipo))
-    return dados
+        num = row[0].value
+        if not num: continue
+        grupos = {}
+        for cat, idxs in categorias.items():
+            urls = []
+            for i in idxs:
+                if i < len(row):
+                    cell = row[i]
+                    url = cell.hyperlink.target if cell.hyperlink else None
+                    if not url and isinstance(cell.value, str) and cell.value.startswith(("http://","https://")):
+                        url = cell.value
+                    if url:
+                        urls.append(url)
+            grupos[cat] = urls
+        resultados.append((num, grupos))
+    return resultados
 
-# Extrair links para Alimentação (URLs como texto)
-def extrair_links_por_alimentacao(file):
+def extrair_links_por_ajuda_custo(file):
     wb = load_workbook(file, data_only=True)
     ws = wb.active
-    header = [cell.value for cell in ws[1]]
+    header = [c.value for c in ws[1]]
     cat1 = header[1] or "Comprovante Capturado"
     cat2 = header[2] or "Outras Evidências"
-    dados = []
+    resultados = []
     for row in ws.iter_rows(min_row=2):
-        id_reembolso = row[0].value
-        if not id_reembolso:
-            continue
-        grupos = {}
-        links1 = []
-        if row[1].value:
-            links1.append(str(row[1].value))
-        grupos[cat1] = links1
-        links2 = []
-        if row[2].value:
-            links2.append(str(row[2].value))
-        grupos[cat2] = links2
-        dados.append((id_reembolso, grupos))
-    return dados
+        idr = row[0].value
+        if not idr: continue
+        grupos = {
+            cat1: [str(row[1].value)] if len(row)>1 and row[1].value else [],
+            cat2: [str(row[2].value)] if len(row)>2 and row[2].value else []
+        }
+        resultados.append((idr, grupos))
+    return resultados
 
-# Converter PDF em imagens
 def pdf_para_imagens(pdf_bytes):
-    imagens = []
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-        for page in doc:
+    imgs = []
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc_pdf:
+        for page in doc_pdf:
             pix = page.get_pixmap(dpi=150)
-            img = Image.open(BytesIO(pix.tobytes("png")))
-            imagens.append(img)
-    return imagens
+            imgs.append(Image.open(BytesIO(pix.tobytes("png"))))
+    return imgs
 
-# Interface
+# === Interface ===
 inserir_logo()
-funcao = st.sidebar.radio("Opções", ["Ação de Relacionamento", "Alimentação"])
+opcao = st.sidebar.radio("Opções", ["Ação de Relacionamento", "Ajuda de Custo"])
 
-if funcao == "Ação de Relacionamento":
+# --- Ação de Relacionamento (com cores e spinner iguais ao Ajuda de Custo) ---
+if opcao == "Ação de Relacionamento":
     st.title("Automação FFM - Evidências Ação de Relacionamento")
-    download_button('Planilha Modelo', TEMPLATE_RELACIONAMENTO, 'planilha_modelo_relacionamento.xlsx')
-    uploaded_file = st.file_uploader("📂 Envie a planilha de Relacionamento (.xlsx)", type=["xlsx"], key="rel_upload")
-    if uploaded_file:
-        info_links = extrair_links_por_relatorio(uploaded_file)
-        if not info_links:
-            st.error("❌ Nenhum link encontrado na planilha.")
+    download_button(
+        "Planilha Modelo",
+        TEMPLATE_RELACIONAMENTO,
+        os.path.basename(TEMPLATE_RELACIONAMENTO)
+    )
+    uploaded = st.file_uploader(
+        "📂 Envie a planilha de Relacionamento (.xlsx)",
+        type="xlsx",
+        key="rel_upload"
+    )
+    if uploaded:
+        info = extrair_links_por_relatorio(uploaded)
+        total = len(info)
+        if not info:
+            st.error("❌ Nenhum link encontrado.")
         else:
-            st.success(f"✅ {len(info_links)} relatórios encontrados.")
-            if st.button("📝 Gerar Documento Word", key="btn_rel"): 
+            st.success(f"✅ {total} relatórios encontrados.")
+            if st.button("📝 Gerar Documento Word", key="btn_rel"):
                 doc = Document()
-                log_area = st.empty()
-                for i, (num_relatorio, grupos) in enumerate(info_links, 1):
-                    log_area.markdown(f"🔄 Processando relatório {num_relatorio} ({i}/{len(info_links)})")
-                    for categoria, links in grupos.items():
-                        if not links:
-                            continue
-                        doc.add_page_break()
-                        p = doc.add_paragraph()
-                        ajustar_altura_doc_paragrafo(p)
-                        p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                        run = p.add_run(f"Relatório: {num_relatorio} — {categoria}")
-                        aplicar_fonte_arial(run)
-                        for link in links:
-                            try:
+                log = st.empty()
+                for i, (num_rel, grupos) in enumerate(info, 1):
+                    # spinner com texto fixo "Processando"
+                    with st.spinner("Processando"):
+                        # log colorido: linha e número do relatório em vermelho
+                        log.markdown(
+                            f"🔄 <span style='color:green'>Linha {i}/{total}</span> - "
+                            f"Processando Relatório <span style='color:red'>{num_rel}</span>",
+                            unsafe_allow_html=True
+                        )
+                        for categoria, links in grupos.items():
+                            if not links:
+                                continue
+                            doc.add_page_break()
+                            p = doc.add_paragraph()
+                            ajustar_altura_doc_paragrafo(p)
+                            p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                            run = p.add_run(f"Relatório: {num_rel} — {categoria}")
+                            aplicar_fonte_arial(run)
+                            for link in links:
                                 if not link.startswith("http"):
-                                    link = "https://" + link
-                                resp = requests.get(link, timeout=20)
-                                resp.raise_for_status()
-                                ct = resp.headers.get('Content-Type', '')
-                                if 'pdf' in ct:
-                                    imgs = pdf_para_imagens(resp.content)
-                                else:
-                                    img = Image.open(BytesIO(resp.content)).convert("RGB")
-                                    extrema = img.getextrema()
-                                    if all(e[0]==e[1] for e in extrema):
-                                        raise ValueError("Imagem em branco.")
-                                    imgs = [img]
-                                for img in imgs:
-                                    p_img = doc.add_paragraph()
-                                    p_img.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                                    inserir_imagem_redimensionada(p_img, img)
-                            except Exception as e_img:
-                                p_err = doc.add_paragraph()
-                                p_err.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                                r_err = p_err.add_run(f"⚠️ Erro ao carregar imagem: {e_img}")
-                                aplicar_fonte_arial(r_err)
+                                    link = "https://" + link.strip()
+                                success = False
+                                for attempt in range(1, 4):
+                                    try:
+                                        resp = session.get(link, timeout=(5,60), stream=True)
+                                        resp.raise_for_status()
+                                        ct = resp.headers.get("Content-Type","")
+                                        imgs = (
+                                            pdf_para_imagens(resp.content)
+                                            if "pdf" in ct
+                                            else [Image.open(BytesIO(resp.content)).convert("RGB")]
+                                        )
+                                        for img in imgs:
+                                            p_img = doc.add_paragraph()
+                                            p_img.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                                            inserir_imagem_redimensionada(p_img, img)
+                                        success = True
+                                        break
+                                    except Exception as e:
+                                        if attempt == 3:
+                                            pe = doc.add_paragraph()
+                                            pe.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                                            re = pe.add_run(f"⚠️ Erro após 3 tentativas: {e}")
+                                            aplicar_fonte_arial(re)
+                                if not success:
+                                    st.warning(f"Falha ao carregar: {link}")
                 buffer = BytesIO()
                 doc.save(buffer)
                 buffer.seek(0)
-                log_area.empty()
-                st.success("✅ Documento Word gerado!")
+                log.empty()
+                st.success("✅ Documento gerado!")
                 st.download_button(
-                    label="📥 Baixar Word - Relacionamento", 
-                    data=buffer, 
-                    file_name="evidencias_acao_relacionamento.docx", 
+                    "📥 Baixar Word - Relacionamento",
+                    data=buffer,
+                    file_name="evidencias_acao_relacionamento.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
-elif funcao == "Alimentação":
-    st.title("Automação FFM - Evidências Alimentação")
-    download_button('Planilha Modelo', TEMPLATE_ALIMENTACAO, 'planilha_modelo_alimentacao.xlsx')
-    uploaded_file = st.file_uploader("📂 Envie a planilha de Alimentação (.xlsx)", type=["xlsx"], key="alim_upload")
-    
-    if uploaded_file:
-        info_links = extrair_links_por_alimentacao(uploaded_file)
-        
-        if not info_links:
-            st.error("❌ Nenhum link encontrado na planilha.")
-        
+
+# --- Ajuda de Custo (inalterado) ---
+elif opcao == "Ajuda de Custo":
+    st.title("Automação FFM - Ajuda de Custo")
+    download_button(
+        "Planilha Modelo",
+        TEMPLATE_AJUDA_CUSTO,
+        os.path.basename(TEMPLATE_AJUDA_CUSTO)
+    )
+    uploaded = st.file_uploader(
+        "📂 Envie a planilha de Ajuda de Custo (.xlsx)",
+        type="xlsx",
+        key="ajc_upload"
+    )
+    if uploaded:
+        info = extrair_links_por_ajuda_custo(uploaded)
+        total = len(info)
+        if not info:
+            st.error("❌ Nenhum link encontrado.")
         else:
-            st.success(f"✅ {len(info_links)} reembolsos encontrados.")
-            
-            if st.button("📝 Gerar Documento Word - Alimentação", key="btn_alim"):
+            st.success(f"✅ {total} reembolsos encontrados.")
+            if st.button("📝 Gerar Documento Word - Ajuda de Custo", key="btn_ajc"):
                 doc = Document()
-                log_area = st.empty()
-                
-                for i, (id_reembolso, grupos) in enumerate(info_links, 1):
-                    log_area.markdown(f"🔄 Processando reembolso {id_reembolso} ({i}/{len(info_links)})")
-                    
-                    for categoria, links in grupos.items():
-                        if not links:
-                            continue
-                        
-                        doc.add_page_break()
-                        p = doc.add_paragraph()
-                        ajustar_altura_doc_paragrafo(p)
-                        p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                        run = p.add_run(f"Reembolso: {id_reembolso} — {categoria}")
-                        aplicar_fonte_arial(run)
-                        
-                        for link in links:
-                            try:
-                                attempt = 0
-                                max_attempts = 3  # Número de tentativas
-                                
-                                while attempt < max_attempts:
-                                    attempt += 1
-                                    log_area.write(f"Tentativa {attempt} de carregar imagem: {link}")
-                                    
-                                    if not link.startswith("http"):
-                                        link = "https://" + link
-                                    
-                                    resp = requests.get(link, timeout=40)
-                                    resp.raise_for_status()
-                                    
-                                    ct = resp.headers.get('Content-Type', '')
-                                    
-                                    if 'pdf' in ct:
-                                        imgs = pdf_para_imagens(resp.content)
-                                    
-                                    else:
-                                        img = Image.open(BytesIO(resp.content)).convert("RGB")
-                                        extrema = img.getextrema()
-                                        
-                                        if all(e[0] == e[1] for e in extrema):
-                                            raise ValueError("Imagem em branco.")
-                                        
-                                        imgs = [img]
-                                    
-                                    for img in imgs:
-                                        p_img = doc.add_paragraph()
-                                        p_img.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                                        inserir_imagem_redimensionada(p_img, img)
-                                        break  # Exit loop after successfully loading image
-                                
-                                else:
-                                    st.warning(f"Todas as tentativas falharam para carregar: {link}")
-                            
-                            except Exception as e_img:
-                                p_err = doc.add_paragraph()
-                                p_err.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                                r_err = p_err.add_run(f"⚠️ Erro ao carregar imagem: {e_img}")
-                                aplicar_fonte_arial(r_err)
-                
+                log = st.empty()
+                for i, (idr, grupos) in enumerate(info, 1):
+                    with st.spinner("Processando"):
+                        log.markdown(
+                            f"🔄 <span style='color:green'>Linha {i}/{total}</span> - "
+                            f"Processando Id do reembolso <span style='color:red'>{idr}</span>",
+                            unsafe_allow_html=True
+                        )
+                        for categoria, links in grupos.items():
+                            if not links:
+                                continue
+                            doc.add_page_break()
+                            p = doc.add_paragraph()
+                            ajustar_altura_doc_paragrafo(p)
+                            p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                            run = p.add_run(f"Reembolso: {idr} — {categoria}")
+                            aplicar_fonte_arial(run)
+                            for link in links:
+                                if not link.startswith("http"):
+                                    link = "https://" + link.strip()
+                                success = False
+                                for attempt in range(1, 4):
+                                    try:
+                                        resp = session.get(link, timeout=(5,60), stream=True)
+                                        resp.raise_for_status()
+                                        ct = resp.headers.get("Content-Type","")
+                                        imgs = (
+                                            pdf_para_imagens(resp.content)
+                                            if "pdf" in ct
+                                            else [Image.open(BytesIO(resp.content)).convert("RGB")]
+                                        )
+                                        for img in imgs:
+                                            p_img = doc.add_paragraph()
+                                            p_img.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                                            inserir_imagem_redimensionada(p_img, img)
+                                        success = True
+                                        break
+                                    except Exception as e:
+                                        if attempt == 3:
+                                            pe = doc.add_paragraph()
+                                            pe.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                                            re = pe.add_run(f"⚠️ Erro após 3 tentativas: {e}")
+                                            aplicar_fonte_arial(re)
+                                if not success:
+                                    st.warning(f"Falha ao carregar: {link}")
                 buffer = BytesIO()
                 doc.save(buffer)
                 buffer.seek(0)
-                log_area.empty()
-                st.success("✅ Documento Word gerado!")
-                
+                log.empty()
+                st.success("✅ Documento gerado!")
                 st.download_button(
-                    label="📥 Baixar Word - Alimentação", 
-                    data=buffer, 
-                    file_name="evidencias_alimentacao.docx", 
+                    "📥 Baixar Word - Ajuda de Custo",
+                    data=buffer,
+                    file_name="evidencias_ajuda_de_custo.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
