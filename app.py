@@ -42,6 +42,9 @@ def inserir_logo():
     st.image(os.path.join(BASE_DIR, "logo_spot.png"), width=250)
 
 def download_button(label, path, filename):
+    if not os.path.isfile(path):
+        st.error(f"❌ Template não encontrado: {filename}")
+        return
     with open(path, "rb") as f:
         data = f.read()
     st.download_button(
@@ -126,7 +129,7 @@ def pdf_para_imagens(pdf_bytes):
 inserir_logo()
 opcao = st.sidebar.radio("Opções", ["Ação de Relacionamento", "Ajuda de Custo"])
 
-# --- Ação de Relacionamento (com cores e spinner iguais ao Ajuda de Custo) ---
+# --- Ação de Relacionamento ---
 if opcao == "Ação de Relacionamento":
     st.title("Automação FFM - Evidências Ação de Relacionamento")
     download_button(
@@ -150,11 +153,9 @@ if opcao == "Ação de Relacionamento":
                 doc = Document()
                 log = st.empty()
                 for i, (num_rel, grupos) in enumerate(info, 1):
-                    # spinner com texto fixo "Processando"
                     with st.spinner("Processando"):
-                        # log colorido: linha e número do relatório em vermelho
                         log.markdown(
-                            f"🔄 <span style='color:green'>Linha {i}/{total}</span> - "
+                            f"🔄 <span style='color:red'>Linha {i}/{total}</span> - "
                             f"Processando Relatório <span style='color:red'>{num_rel}</span>",
                             unsafe_allow_html=True
                         )
@@ -176,11 +177,7 @@ if opcao == "Ação de Relacionamento":
                                         resp = session.get(link, timeout=(5,60), stream=True)
                                         resp.raise_for_status()
                                         ct = resp.headers.get("Content-Type","")
-                                        imgs = (
-                                            pdf_para_imagens(resp.content)
-                                            if "pdf" in ct
-                                            else [Image.open(BytesIO(resp.content)).convert("RGB")]
-                                        )
+                                        imgs = pdf_para_imagens(resp.content) if "pdf" in ct else [Image.open(BytesIO(resp.content)).convert("RGB")]
                                         for img in imgs:
                                             p_img = doc.add_paragraph()
                                             p_img.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
@@ -195,19 +192,19 @@ if opcao == "Ação de Relacionamento":
                                             aplicar_fonte_arial(re)
                                 if not success:
                                     st.warning(f"Falha ao carregar: {link}")
-                buffer = BytesIO()
-                doc.save(buffer)
-                buffer.seek(0)
+                buf = BytesIO()
+                doc.save(buf)
+                buf.seek(0)
                 log.empty()
                 st.success("✅ Documento gerado!")
                 st.download_button(
                     "📥 Baixar Word - Relacionamento",
-                    data=buffer,
+                    data=buf,
                     file_name="evidencias_acao_relacionamento.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
 
-# --- Ajuda de Custo (inalterado) ---
+# --- Ajuda de Custo ---
 elif opcao == "Ajuda de Custo":
     st.title("Automação FFM - Ajuda de Custo")
     download_button(
@@ -233,7 +230,7 @@ elif opcao == "Ajuda de Custo":
                 for i, (idr, grupos) in enumerate(info, 1):
                     with st.spinner("Processando"):
                         log.markdown(
-                            f"🔄 <span style='color:green'>Linha {i}/{total}</span> - "
+                            f"🔄 <span style='color:red'>Linha {i}/{total}</span> - "
                             f"Processando Id do reembolso <span style='color:red'>{idr}</span>",
                             unsafe_allow_html=True
                         )
@@ -255,11 +252,7 @@ elif opcao == "Ajuda de Custo":
                                         resp = session.get(link, timeout=(5,60), stream=True)
                                         resp.raise_for_status()
                                         ct = resp.headers.get("Content-Type","")
-                                        imgs = (
-                                            pdf_para_imagens(resp.content)
-                                            if "pdf" in ct
-                                            else [Image.open(BytesIO(resp.content)).convert("RGB")]
-                                        )
+                                        imgs = pdf_para_imagens(resp.content) if "pdf" in ct else [Image.open(BytesIO(resp.content)).convert("RGB")]
                                         for img in imgs:
                                             p_img = doc.add_paragraph()
                                             p_img.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
@@ -274,14 +267,14 @@ elif opcao == "Ajuda de Custo":
                                             aplicar_fonte_arial(re)
                                 if not success:
                                     st.warning(f"Falha ao carregar: {link}")
-                buffer = BytesIO()
-                doc.save(buffer)
-                buffer.seek(0)
+                buf = BytesIO()
+                doc.save(buf)
+                buf.seek(0)
                 log.empty()
                 st.success("✅ Documento gerado!")
                 st.download_button(
                     "📥 Baixar Word - Ajuda de Custo",
-                    data=buffer,
+                    data=buf,
                     file_name="evidencias_ajuda_de_custo.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
