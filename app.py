@@ -131,7 +131,7 @@ opcao = st.sidebar.radio("Opções", ["Ação de Relacionamento", "Ajuda de Cust
 
 # --- Ação de Relacionamento ---
 if opcao == "Ação de Relacionamento":
-    st.title("Automação FFM - Evidências Ação de Relacionamento")
+    st.title("Automação FFM - Ação de Relacionamento")
     download_button(
         "Planilha Modelo",
         TEMPLATE_RELACIONAMENTO,
